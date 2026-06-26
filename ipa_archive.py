@@ -6,7 +6,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen, urlretrieve
 from argparse import ArgumentParser
 from sys import stderr
-import plistlib
+import zipfile
 import sqlite3
 import json
 import gzip
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 
 USE_ZIP_FILESIZE = False
-re_info_plist = re.compile(r'Payload/([^/]+)/Info.plist')
-# re_links = re.compile(r'''<a\s[^>]*href=["']([^>]+\.ipa)["'][^>]*>''')
+re_manifest = re.compile(r'AndroidManifest.xml')
+# re_links = re.compile(r'''<a\s[^>]*href=["']([^>]+\.apk)["'][^>]*>''')
 re_archive_url = re.compile(
     r'https?://archive.org/(?:metadata|details|download)/([^/]+)(?:/.*)?')
 CACHE_DIR = Path(__file__).parent / 'data'
@@ -38,7 +38,7 @@ def main():
 
     cmd = cli.add_parser('add', help='Add urls to cache')
     cmd.add_argument('urls', metavar='URL', nargs='+',
-                     help='Search URLs for .ipa links')
+                     help='Search URLs for .apk links')
 
     cmd = cli.add_parser('update', help='Update all urls')
     cmd.add_argument('urls', metavar='URL', nargs='*', help='URLs or index')
@@ -58,7 +58,7 @@ def main():
     cmd.add_argument('err_type', choices=['reset'], help='Set done=0 to retry')
 
     cmd = cli.add_parser('get', help='Lookup value')
-    cmd.add_argument('get_type', choices=['url', 'img', 'ipa'],
+    cmd.add_argument('get_type', choices=['url', 'img', 'apk'],
                      help='Get data field or download image.')
     cmd.add_argument('pk', metavar='PK', type=int,
                      nargs='+', help='Primary key')
@@ -90,7 +90,7 @@ def main():
             for pk in args.pk:
                 url = DB.getUrl(pk)
                 print(pk, ': process', url)
-                loadIpa(pk, url, overwrite=True)
+                loadApk(pk, url, overwrite=True)
         else:
             if args.force:
                 print('Resetting done state ...')
@@ -117,14 +117,14 @@ def main():
             for pk in args.pk:
                 url = DB.getUrl(pk)
                 print(pk, ': load image', url)
-                loadIpa(pk, url, overwrite=True, image_only=True)
-        elif args.get_type == 'ipa':
-            dir = Path('ipa_download')
+                loadApk(pk, url, overwrite=True, image_only=True)
+        elif args.get_type == 'apk':
+            dir = Path('apk_download')
             dir.mkdir(exist_ok=True)
             for pk in args.pk:
                 url = DB.getUrl(pk)
-                print(pk, ': load ipa', url)
-                urlretrieve(url, dir / f'{pk}.ipa', printProgress)
+                print(pk, ': load apk', url)
+                urlretrieve(url, dir / f'{pk}.apk', printProgress)
                 print(end='\r')
 
     elif args.cmd == 'set':
@@ -141,7 +141,7 @@ def main():
 
 class CacheDB:
     def __init__(self) -> None:
-        self._db = sqlite3.connect(CACHE_DIR / 'ipa_cache.db')
+        self._db = sqlite3.connect(CACHE_DIR / 'apk_cache.db')
         self._db.execute('pragma busy_timeout=5000')
 
     def init(self):
@@ -160,10 +160,9 @@ class CacheDB:
                 done INTEGER DEFAULT 0,
                 fsize INTEGER DEFAULT 0,
 
-                min_os INTEGER DEFAULT NULL,
-                platform INTEGER DEFAULT NULL,
+                min_sdk INTEGER DEFAULT NULL,
                 title TEXT DEFAULT NULL,
-                bundle_id TEXT DEFAULT NULL,
+                package_id TEXT DEFAULT NULL,
                 version TEXT DEFAULT NULL,
 
                 UNIQUE(base_url, path_name) ON CONFLICT ABORT,
@@ -209,7 +208,7 @@ class CacheDB:
             x = self._db.execute('SELECT pk FROM urls WHERE url = ?;', [base])
             return x.fetchone()[0]
 
-    def insertIpaUrls(
+    def insertApkUrls(
         self, baseUrlId: int, entries: 'Iterable[tuple[str, int, str]]'
     ) -> int:
         ''' :entries: must be iterable of `(path_name, filesize, crc32)` '''
@@ -232,7 +231,7 @@ class CacheDB:
             UPDATE urls SET date=strftime('%s','now') WHERE pk=?''', [uid])
         self._db.commit()
 
-    def updateIpaUrl(self, baseUrlId: int, entry: 'tuple[str, int, str]') \
+    def updateApkUrl(self, baseUrlId: int, entry: 'tuple[str, int, str]') \
             -> 'int|None':
         ''' :entry: must be `(path_name, filesize, crc32)` '''
         uid = self.getId(baseUrlId, entry[0])
@@ -241,7 +240,7 @@ class CacheDB:
                              [entry[1], uid])
             self._db.commit()
             return uid
-        if self.insertIpaUrls(baseUrlId, [entry]) > 0:
+        if self.insertApkUrls(baseUrlId, [entry]) > 0:
             x = self._db.execute('SELECT MAX(pk) FROM idx;')
             return x.fetchone()[0]
         return None
@@ -255,15 +254,15 @@ class CacheDB:
             rv[pk] = url
         return rv
 
-    def enumJsonIpa(self, *, done: int) -> Iterable[tuple]:
+    def enumJsonApk(self, *, done: int) -> Iterable[tuple]:
         yield from self._db.execute('''
-            SELECT pk, platform, IFNULL(min_os, 0),
+            SELECT pk, IFNULL(min_sdk, 0),
                 TRIM(IFNULL(title,
                     REPLACE(path_name,RTRIM(path_name,REPLACE(path_name,'/','')),'')
-                )) as tt, IFNULL(bundle_id, ""),
+                )) as tt, IFNULL(package_id, ""),
                 version, base_url, path_name, fsize / 1024
             FROM idx WHERE done=?
-            ORDER BY tt COLLATE NOCASE, min_os, platform, version;''', [done])
+            ORDER BY tt COLLATE NOCASE, min_sdk, version;''', [done])
 
     # Filesize
 
@@ -302,54 +301,73 @@ class CacheDB:
     def setPermanentError(self, uid: int) -> None:
         '''
         Set done=4 and all file related columns to NULL.
-        Will also delete all plist, and image files for {uid} in CACHE_DIR
+        Will also delete all manifest, and image files for {uid} in CACHE_DIR
         '''
         self._db.execute('''
-            UPDATE idx SET done=4, min_os=NULL, platform=NULL, title=NULL,
-            bundle_id=NULL, version=NULL WHERE pk=?;''', [uid])
+            UPDATE idx SET done=4, min_sdk=NULL, title=NULL,
+            package_id=NULL, version=NULL WHERE pk=?;''', [uid])
         self._db.commit()
-        for ext in ['.plist', '.png', '.jpg']:
+        for ext in ['.manifest', '.png', '.jpg']:
             fname = diskPath(uid, ext)
             if fname.exists():
                 os.remove(fname)
 
     def setDone(self, uid: int) -> None:
-        plist_path = diskPath(uid, '.plist')
-        if not plist_path.exists():
+        manifest_path = diskPath(uid, '.manifest')
+        if not manifest_path.exists():
             return
-        with open(plist_path, 'rb') as fp:
+        with open(manifest_path, 'rb') as fp:
             try:
-                plist = plistlib.load(fp)
+                manifest = self._parseManifest(fp.read())
             except Exception as e:
-                print(f'ERROR: [{uid}] PLIST: {e}', file=stderr)
+                print(f'ERROR: [{uid}] MANIFEST: {e}', file=stderr)
                 self.setError(uid, done=3)
                 return
 
-        bundleId = plist.get('CFBundleIdentifier')
-        title = plist.get('CFBundleDisplayName') or plist.get('CFBundleName')
-        v_short = str(plist.get('CFBundleShortVersionString', ''))
-        v_long = str(plist.get('CFBundleVersion', ''))
-        version = v_short or v_long
-        if version != v_long and v_long:
-            version += f' ({v_long})'
-        minOS = [int(x) for x in plist.get('MinimumOSVersion', '0').split('.')]
-        minOS += [0, 0, 0]  # ensures at least 3 components are given
-        platforms = sum(1 << int(x) for x in plist.get('UIDeviceFamily', []))
-        if not platforms and minOS[0] in [0, 1, 2, 3]:
-            platforms = 1 << 1  # fallback to iPhone for old versions
+        packageId = manifest.get('package', '')
+        title = manifest.get('label', '')
+        version = manifest.get('versionName', '')
+        minSdk = int(manifest.get('minSdkVersion', 0))
 
         self._db.execute('''
             UPDATE idx SET
-                done=1, min_os=?, platform=?, title=?, bundle_id=?, version=?
+                done=1, min_sdk=?, title=?, package_id=?, version=?
             WHERE pk=?;''', [
-            (minOS[0] * 10000 + minOS[1] * 100 + minOS[2]) or None,
-            platforms or None,
+            minSdk or None,
             title or None,
-            bundleId or None,
+            packageId or None,
             version or None,
             uid,
         ])
         self._db.commit()
+
+    @staticmethod
+    def _parseManifest(data: bytes) -> dict:
+        """Parse Android binary manifest - simplified extraction"""
+        manifest = {}
+        # Simple string extraction from manifest
+        if b'package=' in data:
+            try:
+                manifest['package'] = str(data).split('package=')[1].split('\\')[0]
+            except:
+                pass
+        if b'versionName=' in data:
+            try:
+                manifest['versionName'] = str(data).split('versionName=')[1].split('\\')[0]
+            except:
+                pass
+        if b'minSdkVersion=' in data:
+            try:
+                sdk_str = str(data).split('minSdkVersion=')[1].split('\\')[0]
+                manifest['minSdkVersion'] = int(''.join(filter(str.isdigit, sdk_str)))
+            except:
+                pass
+        if b'application-label=' in data:
+            try:
+                manifest['label'] = str(data).split('application-label=')[1].split('\\')[0]
+            except:
+                pass
+        return manifest
 
 
 ###############################################
@@ -363,7 +381,7 @@ def addNewUrl(url: str) -> None:
     baseUrlId = CacheDB().insertBaseUrl(urlForArchiveOrgId(archiveId))
     json_file = pathToListJson(baseUrlId)
     entries = downloadListArchiveOrg(archiveId, json_file)
-    inserted = CacheDB().insertIpaUrls(baseUrlId, entries)
+    inserted = CacheDB().insertApkUrls(baseUrlId, entries)
     print(f'new links added: {inserted} of {len(entries)}')
 
 
@@ -408,7 +426,7 @@ def downloadListArchiveOrg(
     # process and add to DB
     return [(x['name'], int(x.get('size', 0)), x.get('crc32'))
             for x in data['result']
-            if x['source'] == 'original' and x['name'].endswith('.ipa')]
+            if x['source'] == 'original' and x['name'].endswith('.apk')]
 
 
 ###############################################
@@ -445,7 +463,7 @@ def updateUrl(url_or_uid: 'str|int', proc_i: int, proc_total: int):
                 print(f'  [ERROR] could not find old entry {old_entry[0]}',
                       file=stderr)
         for new_entry in sorted(new_diff):
-            uid = DB.updateIpaUrl(baseUrlId, new_entry)
+            uid = DB.updateApkUrl(baseUrlId, new_entry)
             if uid:
                 print(f'  add: [{uid}] {new_entry}')
                 c_new += 1
@@ -524,7 +542,7 @@ def procSinglePending(
     humanUrl = url.split('archive.org/download/')[-1]
     print(f'[{processed}|{pending} queued]: load[{uid}] {humanUrl}')
     try:
-        return uid, loadIpa(uid, url)
+        return uid, loadApk(uid, url)
     except Exception as e:
         print(f'ERROR: [{uid}] {e}', file=stderr)
     return uid, False
@@ -541,16 +559,16 @@ def onceReadSizeFromFile(uid: int) -> 'int|None':
 
 
 ###############################################
-# Process IPA zip
+# Process APK zip
 ###############################################
 
-def loadIpa(uid: int, url: str, *,
+def loadApk(uid: int, url: str, *,
             overwrite: bool = False, image_only: bool = False) -> bool:
     basename = diskPath(uid, '')
     basename.parent.mkdir(exist_ok=True)
     img_path = basename.with_suffix('.png')
-    plist_path = basename.with_suffix('.plist')
-    if not overwrite and plist_path.exists():
+    manifest_path = basename.with_suffix('.manifest')
+    if not overwrite and manifest_path.exists():
         return True
 
     with RemoteZip(url) as zip:
@@ -559,109 +577,31 @@ def loadIpa(uid: int, url: str, *,
             with open(basename.with_suffix('.size'), 'w') as fp:
                 fp.write(str(filesize))
 
-        app_name = None
         artwork = False
         zip_listing = zip.infolist()
-        has_payload_folder = False
+        manifest_found = False
 
         for entry in zip_listing:
             fn = entry.filename.lstrip('/')
-            has_payload_folder |= fn.startswith('Payload/')
-            plist_match = re_info_plist.match(fn)
-            if fn == 'iTunesArtwork':
+            if fn == 'AndroidManifest.xml':
+                manifest_found = True
+                if not image_only:
+                    extractZipEntry(zip, entry, manifest_path)
+            elif fn == 'res/mipmap-hdpi/ic_launcher.png' or fn == 'res/mipmap-xxxhdpi/ic_launcher.png':
                 extractZipEntry(zip, entry, img_path)
                 artwork = os.path.getsize(img_path) > 0
-            elif plist_match:
-                app_name = plist_match.group(1)
-                if not image_only:
-                    extractZipEntry(zip, entry, plist_path)
 
-        if not has_payload_folder:
-            print(f'ERROR: [{uid}] ipa has no "Payload/" root folder',
+        if not manifest_found:
+            print(f'ERROR: [{uid}] apk has no "AndroidManifest.xml"',
                   file=stderr)
 
-        # if no iTunesArtwork found, load file referenced in plist
-        if not artwork and app_name and plist_path.exists():
-            with open(plist_path, 'rb') as fp:
-                icon_names = iconNameFromPlist(plistlib.load(fp))
-                icon = expandImageName(zip_listing, app_name, icon_names)
-                if icon:
-                    extractZipEntry(zip, icon, img_path)
-
-    return plist_path.exists()
+    return manifest_path.exists()
 
 
 def extractZipEntry(zip: 'RemoteZip', zipInfo: 'ZipInfo', dest_filename: Path):
     with zip.open(zipInfo) as src:
         with open(dest_filename, 'wb') as tgt:
             tgt.write(src.read())
-
-
-###############################################
-# Icon name extraction
-###############################################
-RESOLUTION_ORDER = ['3x', '2x', '180', '167', '152', '120']
-
-
-def expandImageName(
-    zip_listing: 'list[ZipInfo]', appName: str, iconList: 'list[str]'
-) -> 'ZipInfo|None':
-    for iconName in iconList + ['Icon', 'icon']:
-        zipPath = f'Payload/{appName}/{iconName}'
-        matchingNames = [x.filename.split('/', 2)[-1] for x in zip_listing
-                         if x.filename.lstrip('/').startswith(zipPath)]
-        if len(matchingNames) > 0:
-            for bestName in sortedByResolution(matchingNames):
-                bestPath = f'Payload/{appName}/{bestName}'
-                for x in zip_listing:
-                    if x.filename.lstrip('/') == bestPath and x.file_size > 0:
-                        return x
-    return None
-
-
-def unpackNameListFromPlistDict(bundleDict: 'dict|None') -> 'list[str]|None':
-    if not bundleDict:
-        return None
-    primaryDict = bundleDict.get('CFBundlePrimaryIcon', {})
-    icons = primaryDict.get('CFBundleIconFiles')
-    if not icons:
-        singular = primaryDict.get('CFBundleIconName')
-        if singular:
-            return [singular]
-    return icons
-
-
-def resolutionIndex(icon_name: str):
-    penalty = 0
-    if 'small' in icon_name.lower() or icon_name.lower().startswith('default'):
-        penalty = 10
-    for i, match in enumerate(RESOLUTION_ORDER):
-        if match in icon_name:
-            return i + penalty
-    return 50 + penalty
-
-
-def sortedByResolution(icons: 'list[str]') -> 'list[str]':
-    icons.sort(key=resolutionIndex)
-    return icons
-
-
-def iconNameFromPlist(plist: dict) -> 'list[str]':
-    # Check for CFBundleIcons (since 5.0)
-    icons = unpackNameListFromPlistDict(plist.get('CFBundleIcons'))
-    if not icons:
-        icons = unpackNameListFromPlistDict(plist.get('CFBundleIcons~ipad'))
-        if not icons:
-            # Check for CFBundleIconFiles (since 3.2)
-            icons = plist.get('CFBundleIconFiles')
-            if not icons:
-                # key found on iTunesU app
-                icons = plist.get('Icon files')
-                if not icons:
-                    # Check for CFBundleIconFile (legacy, before 3.2)
-                    icon = plist.get('CFBundleIconFile')  # may be None
-                    return [icon] if icon else []
-    return sortedByResolution(icons)
 
 
 ###############################################
@@ -677,15 +617,15 @@ def export_json():
     url_map[maxUrlId] = '---'
     submap = {}
     total = DB.count(done=1)
-    with open(CACHE_DIR / 'ipa.json', 'w') as fp:
+    with open(CACHE_DIR / 'apk.json', 'w') as fp:
         fp.write('[')
-        for i, entry in enumerate(DB.enumJsonIpa(done=1)):
+        for i, entry in enumerate(DB.enumJsonApk(done=1)):
             if i % 113 == 0:
                 print(f'\rprocessing [{i}/{total}]', end='')
             # if path_name is in a subdirectory, reindex URLs
-            if '/' in entry[7]:
-                baseurl = url_map[entry[6]]
-                sub_dir, sub_file = entry[7].split('/', 1)
+            if '/' in entry[6]:
+                baseurl = url_map[entry[5]]
+                sub_dir, sub_file = entry[6].split('/', 1)
                 newurl = baseurl + '/' + sub_dir
                 subIdx = submap.get(newurl, None)
                 if subIdx is None:
@@ -693,15 +633,15 @@ def export_json():
                     submap[newurl] = maxUrlId
                     subIdx = maxUrlId
                 entry = list(entry)
-                entry[6] = subIdx
-                entry[7] = sub_file
+                entry[5] = subIdx
+                entry[6] = sub_file
 
             if i > 0:
                 fp.write(',\n')
             fp.write(json.dumps(entry, separators=(',', ':')))
         fp.write(']')
         print('\r', end='')
-    print(f'write ipa.json: {total} entries')
+    print(f'write apk.json: {total} entries')
 
     for newurl, newidx in submap.items():
         url_map[newidx] = newurl
