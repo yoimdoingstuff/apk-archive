@@ -5,7 +5,7 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="initial-scale=1.0,maximum-scale=1.0">
 	<meta name="referrer" content="no-referrer">
-	<title>IPA Archive</title>
+	<title>APK Archive</title>
 	<link rel="shortcut icon" href="./favicon.ico">
 	<link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
 	<link rel="stylesheet" href="style.css">
@@ -13,23 +13,16 @@
 </head>
 
 <body>
-	<button style="float: right; margin: 0 16px" onclick="randomIPA()">Random</button>
-	<h1>IPA Archive</h1>
-	<form onsubmit="event.preventDefault(); searchIPA(); return false;" autocomplete="off">
+	<button style="float: right; margin: 0 16px" onclick="randomAPK()">Random</button>
+	<h1>APK Archive</h1>
+	<form onsubmit="event.preventDefault(); searchAPK(); return false;" autocomplete="off">
 		<input id="page" hidden>
 		<input id="minid" hidden>
+		<input id="plistServer" hidden>
 		<label for="search">Search: <input id="search" placeholder="Search"></label>
-		<label for="bundleid">BundleId: <input id="bundleid" placeholder="com.gameloft."></label>
+		<label for="packageid">Package ID: <input id="packageid" placeholder="com.example."></label>
 		<label for="unique">Unique: <input id="unique" type="checkbox" checked></label>
-		<label for="minos">min OS: <input id="minos" placeholder="1.0"></label>
-		<label for="maxos">max OS: <input id="maxos" placeholder="5.1.1"></label>
-		<label for="device">Device: <select id="device">
-				<option value="">Any</option>
-				<option value="1">iPhone</option>
-				<option value="2">iPad</option>
-				<option value="3">TV</option>
-				<option value="4">Watch</option>
-			</select></label>
+		<label for="minsdk">min SDK: <input id="minsdk" placeholder="21"></label>
 		<button type="submit">Search</button>
 	</form>
 
@@ -39,14 +32,13 @@
 		<div class="entry full">
 			<div>
 				<img src="$IMG">
-				<button onclick="installIPA($IDX)">Install</button>
+				<button onclick="installAPK($IDX)">Download</button>
 			</div>
 			<div class="info">
 				<h4>$TITLE</h4>
-				<div>BundleId: $BUNDLEID</div>
+				<div>Package ID: $PACKAGEID</div>
 				<div>Version: v$VERSION – $SIZE</div>
-				<div>Device: $PLATFORM</div>
-				<div>Minimum OS: $MINOS</div>
+				<div>Minimum SDK: $MINSDK</div>
 				<div>Link: <a href="$URL" rel="noopener noreferrer nofollow">$URLNAME</a></div>
 			</div>
 		</div>
@@ -54,48 +46,32 @@
 			<div><img src="$IMG"></div>
 			<div class="info">
 				<h4>$TITLE</h4>
-				<div>BundleId: $BUNDLEID</div>
-				<div>Device: $PLATFORM</div>
-				<div>Minimum OS: $MINOS</div>
-				<div><a onclick="searchBundle($IDX)">Show all</a></div>
+				<div>Package ID: $PACKAGEID</div>
+				<div>Minimum SDK: $MINSDK</div>
+				<div><a onclick="searchPackage($IDX)">Show all</a></div>
 			</div>
-		</div>
-		<div class="itunes">
-			<h4>iTunes Info:</h4>
-			<div>Genre: $GENRES</div>
-			<div>Rating: $RATING</div>
-			<div>Advisory: $ADVISORY</div>
-			<br>
-			<div>Current Version: <b>$VERSION</b> (last update: $DATE)</div>
-			<div>Price: $PRICE</div>
-			<div>Link: <a href="$URL" rel="noopener noreferrer nofollow">iTunes</a></div>
-			<div>$IMG</div>
-			<p>$DESCRIPTION</p>
 		</div>
 		<a class="screenshot" href="$REF" target="_blank"><img src="$URL" crossorigin="anonymous"
 				referrerpolicy="no-referrer"></a>
 		<div class="randomAction">
 			Actions:
-			<button onclick="searchBundle($IDX, '&random=$IDX')">Show all versions</button>
-			<button onclick="randomIPA()">Next Random</button>
+			<button onclick="searchPackage($IDX, '&random=$IDX')">Show all versions</button>
+			<button onclick="randomAPK()">Next Random</button>
 		</div>
-		<div class="no-itunes">
-			<p>iTunes search disabled. No plist server configured.</p>
-			<a onclick="installIPA()">Configure now</a>
+		<div class="no-play-store">
+			<p>Google Play Store integration available.</p>
 		</div>
 	</div>
 
 	<div id="overlay" hidden>
 		<div id="installMsg">
-			<h3>Install on device</h3>
+			<h3>Configure Server</h3>
 			<p>
-				Unfortunatelly, this function is not possible with static HTML+JS.
-				You must provided a plist generator URL.
-				See the <a href="README.md" target="_blank">README</a> file for further instructions on how to set up such a
-				service.
+				Optional: Provide a server URL for advanced features.
+				See the <a href="README.md" target="_blank">README</a> file for further instructions.
 			</p>
 			<form onsubmit="event.preventDefault(); setPlistGen(); return false;" autocomplete="off">
-				<label for="plistServer">Generator URL:</label>
+				<label for="plistServer">Server URL:</label>
 				<input id="plistServer" placeholder="http://192.168.0.1/">
 				<button type="submit">Save</button>
 				<button type="button" onclick="document.getElementById('overlay').hidden=true">Abort</button>
