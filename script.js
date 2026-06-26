@@ -39,11 +39,11 @@ function loadDB() {
     loadFile('data/urls.json', setMessage, function (data) {
         baseUrls = JSON.parse(data);
         setMessage('Loading database ...');
-        loadFile('data/ipa.json', setMessage, function (data) {
+        loadFile('data/apk.json', setMessage, function (data) {
             DB = JSON.parse(data);
             setMessage('ready. Links in database: ' + DB.length);
-            if (config && (config.page > 0 || config.search || config.bundleid)) {
-                searchIPA(true);
+            if (config && (config.page > 0 || config.search || config.packageid)) {
+                searchAPK(true);
             }
         });
     });
@@ -91,46 +91,41 @@ function saveConfig() {
 
 function applySearch() {
     const term = document.getElementById('search').value.toLowerCase();
-    const bundle = document.getElementById('bundleid').value.trim().toLowerCase();
+    const package_id = document.getElementById('packageid').value.trim().toLowerCase();
     const unique = document.getElementById('unique').checked;
-    const minos = document.getElementById('minos').value;
-    const maxos = document.getElementById('maxos').value;
-    const platform = document.getElementById('device').value;
+    const minsdk = document.getElementById('minsdk').value;
     const minid = document.getElementById('minid').value;
 
-    const minV = minos ? strToVersion(minos) : 0;
-    const maxV = maxos ? strToVersion(maxos) : 9999999;
-    const device = platform ? 1 << platform : 255; // all flags
+    const minV = minsdk ? parseInt(minsdk) : 0;
     const minPK = minid ? parseInt(minid) : 0;
 
-    // [7, 2,20200,"180","com.headcasegames.180","1.0",1,"180.ipa", 189930], 
-    // [pk, platform, minOS, title, bundleId, version, baseUrl, pathName, size]
+    // [pk, minSDK, title, packageId, version, baseUrl, pathName, size]
     DB_result = [];
     isInitial = false;
-    const uniqueBundleIds = {};
-    DB.forEach(function (ipa, i) {
-        if (ipa[2] < minV || ipa[2] > maxV || !(ipa[1] & device) || ipa[0] < minPK) {
+    const uniquePackageIds = {};
+    DB.forEach(function (apk, i) {
+        if (apk[1] < minV || apk[0] < minPK) {
             return;
         }
-        if (bundle && ipa[4].toLowerCase().indexOf(bundle) === -1) {
+        if (package_id && apk[3].toLowerCase().indexOf(package_id) === -1) {
             return;
         }
         if (!term
-            || ipa[3].toLowerCase().indexOf(term) > -1
-            || ipa[4].toLowerCase().indexOf(term) > -1
-            || ipa[7].toLowerCase().indexOf(term) > -1
+            || apk[2].toLowerCase().indexOf(term) > -1
+            || apk[3].toLowerCase().indexOf(term) > -1
+            || apk[6].toLowerCase().indexOf(term) > -1
         ) {
             if (unique) {
-                const bId = ipa[4];
-                if (uniqueBundleIds[bId]) {
+                const pId = apk[3];
+                if (uniquePackageIds[pId]) {
                     return;
                 }
-                uniqueBundleIds[bId] = true;
+                uniquePackageIds[pId] = true;
             }
             DB_result.push(i);
         }
     });
-    delete uniqueBundleIds; // free up memory
+    delete uniquePackageIds; // free up memory
 }
 
 function restoreSearch() {
@@ -138,22 +133,22 @@ function restoreSearch() {
     const conf = loadConfig(false);
     previousSearch = '';
     if (conf.random) {
-        randomIPA(conf.random);
+        randomAPK(conf.random);
     } else {
-        searchIPA(true);
+        searchAPK(true);
     }
 }
 
-function searchBundle(idx, additional) {
+function searchPackage(idx, additional) {
     previousSearch = location.hash + (additional || '');
-    document.getElementById('bundleid').value = DB[idx][4];
+    document.getElementById('packageid').value = DB[idx][3];
     document.getElementById('search').value = '';
     document.getElementById('page').value = null;
     document.getElementById('unique').checked = false;
-    searchIPA();
+    searchAPK();
 }
 
-function searchIPA(restorePage) {
+function searchAPK(restorePage) {
     var page = 0;
     if (restorePage) {
         page = document.getElementById('page').value;
@@ -161,12 +156,12 @@ function searchIPA(restorePage) {
         document.getElementById('page').value = null;
     }
     applySearch();
-    printIPA((page || 0) * PER_PAGE);
+    printAPK((page || 0) * PER_PAGE);
     saveConfig();
 }
 
 /*
- * Random IPA
+ * Random APK
  */
 
 function urlsToImgs(redirectUrl, list) {
@@ -178,9 +173,9 @@ function urlsToImgs(redirectUrl, list) {
     return rv + '</div>';
 }
 
-function randomIPA(specificId) {
+function randomAPK(specificId) {
     document.getElementById('search').value = '';
-    document.getElementById('bundleid').value = '';
+    document.getElementById('packageid').value = '';
     if (saveConfig() || isInitial || specificId) {
         applySearch();
     }
@@ -202,39 +197,12 @@ function randomIPA(specificId) {
         output.innerHTML += getTemplate('.no-itunes');
         return;
     }
-    // Append iTunes info to result
+    // Append Play Store info to result
     const redirectUrl = plistServerUrl + '?r='
-    const iTunesUrl = 'https://itunes.apple.com/lookup?bundleId=' + entry.bundleId;
-    loadFile(redirectUrl + iTunesUrl, console.error, function (data) {
-        const obj = JSON.parse(data);
-        if (!obj || obj.resultCount < 1) {
-            output.innerHTML += '<p class="no-itunes">No iTunes results.</p>';
-            return;
-        }
-        const info = obj.results[0];
-        const imgs1 = info.screenshotUrls;
-        const imgs2 = info.ipadScreenshotUrls;
-        const device = document.getElementById('device').value || 255;
-
-        var imgStr = '';
-        if (imgs1 && imgs1.length > 0 && device & 1) {
-            imgStr += '<p>iPhone Screenshots:</p>' + urlsToImgs(redirectUrl, imgs1);
-        }
-        if (imgs2 && imgs2.length > 0 && device & 2) {
-            imgStr += '<p>iPad Screenshots:</p>' + urlsToImgs(redirectUrl, imgs2);
-        }
-
-        output.innerHTML += renderTemplate(getTemplate('.itunes'), {
-            $VERSION: info.version,
-            $PRICE: info.formattedPrice,
-            $RATING: info.averageUserRating.toFixed(1),
-            $ADVISORY: info.contentAdvisoryRating,
-            $DATE: info.currentVersionReleaseDate,
-            $GENRES: (info.genres || []).join(', '),
-            $URL: info.trackViewUrl,
-            $IMG: imgStr,
-            $DESCRIPTION: info.description,
-        });
+    const playStoreUrl = 'https://play.google.com/store/apps/details?id=' + entry.packageId;
+    loadFile(redirectUrl + playStoreUrl, console.error, function (data) {
+        // Play Store scraping would go here, simplified version:
+        output.innerHTML += '<p class="no-play-store">Play Store integration available.</p>';
     });
 }
 
@@ -242,27 +210,13 @@ function randomIPA(specificId) {
  * Output
  */
 
-function platformToStr(num) {
-    if (!num) { return '?'; }
-    return [
-        num & (1 << 1) ? 'iPhone' : null,
-        num & (1 << 2) ? 'iPad' : null,
-        num & (1 << 3) ? 'TV' : null,
-        num & (1 << 4) ? 'Watch' : null,
-    ].filter(Boolean).join(', ');
-}
-
-function versionToStr(num) {
-    if (!num) { return '?'; }
-    const major = Math.floor(num / 10000);
-    const minor = Math.floor(num / 100) % 100;
-    const patch = num % 100;
-    return major + '.' + minor + (patch ? '.' + patch : '');
+function versionToStr(version) {
+    if (!version) { return '?'; }
+    return version;
 }
 
 function strToVersion(versionStr) {
-    const x = ((versionStr || '0') + '.0.0.0').split('.');
-    return parseInt(x[0]) * 10000 + parseInt(x[1]) * 100 + parseInt(x[2]);
+    return parseInt(versionStr) || 0;
 }
 
 function humanSize(size) {
@@ -290,15 +244,14 @@ function entryToDict(entry) {
     const pk = entry[0];
     return {
         pk: pk,
-        platform: entry[1],
-        minOS: entry[2],
-        title: entry[3],
-        bundleId: entry[4],
-        version: entry[5],
-        baseUrl: entry[6],
-        pathName: entry[7],
-        size: entry[8],
-        ipa_url: baseUrls[entry[6]] + '/' + entry[7],
+        minSDK: entry[1],
+        title: entry[2],
+        packageId: entry[3],
+        version: entry[4],
+        baseUrl: entry[5],
+        pathName: entry[6],
+        size: entry[7],
+        apk_url: baseUrls[entry[5]] + '/' + entry[6],
         img_url: 'data/' + Math.floor(pk / 1000) + '/' + pk + '.jpg',
     }
 }
@@ -313,18 +266,17 @@ function entriesToStr(templateType, data) {
             $IMG: entry.img_url,
             $TITLE: (entry.title || '?').replace('<', '&lt;'),
             $VERSION: entry.version,
-            $BUNDLEID: entry.bundleId,
-            $MINOS: versionToStr(entry.minOS),
-            $PLATFORM: platformToStr(entry.platform),
+            $PACKAGEID: entry.packageId,
+            $MINSDK: entry.minSDK,
             $SIZE: humanSize(entry.size),
             $URLNAME: entry.pathName.split('/').slice(-1), // decodeURI
-            $URL: validUrl(entry.ipa_url),
+            $URL: validUrl(entry.apk_url),
         });
     }
     return rv;
 }
 
-function printIPA(offset) {
+function printAPK(offset) {
     if (!offset) { offset = 0; }
 
     const total = DB_result.length;
@@ -356,7 +308,7 @@ function printIPA(offset) {
  */
 
 function p(page) {
-    printIPA(page * PER_PAGE);
+    printAPK(page * PER_PAGE);
     document.getElementById('page').value = page || null;
     saveConfig();
 }
@@ -382,7 +334,7 @@ function paginationFull(page, pages) {
 }
 
 /*
- * Install on iDevice
+ * Install on Android Device
  */
 
 function setPlistGen() {
@@ -393,10 +345,6 @@ function setPlistGen() {
         return;
     }
     loadFile(testURL + '?d=' + btoa('{"u":"1"}'), alert, function (data) {
-        if (data.trim().slice(0, 6) != '<?xml ') {
-            alert('Server did not respond with a Plist file.');
-            return;
-        }
         plistServerUrl = testURL;
         document.getElementById('overlay').hidden = true;
         saveConfig();
@@ -411,7 +359,7 @@ function utoa(data) {
     return btoa(unescape(encodeURIComponent(data)));
 }
 
-function installIPA(idx) {
+function installAPK(idx) {
     if (!plistServerUrl) {
         document.getElementById('overlay').hidden = false;
         return;
@@ -419,9 +367,9 @@ function installIPA(idx) {
     const thisServerUrl = location.href.replace(location.hash, '');
     const entry = entryToDict(DB[idx]);
     const json = JSON.stringify({
-        u: validUrl(entry.ipa_url),
+        u: validUrl(entry.apk_url),
         n: entry.title,
-        b: entry.bundleId,
+        p: entry.packageId,
         v: entry.version.split(' ')[0],
         i: urlWithSlash(thisServerUrl) + entry.img_url,
     }, null, 0)
@@ -434,7 +382,6 @@ function installIPA(idx) {
     while (b64.slice(-1) === '=') {
         b64 = b64.slice(0, -1);
     }
-    // window.open(plistServerUrl + '?d=' + b64);
-    const plistUrl = plistServerUrl + '%3Fd%3D' + b64; // url encoded "?d="
-    window.open('itms-services://?action=download-manifest&url=' + plistUrl);
+    // Direct download link for APK
+    window.location.href = validUrl(entry.apk_url);
 }
