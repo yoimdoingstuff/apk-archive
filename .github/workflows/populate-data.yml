@@ -1,0 +1,80 @@
+permissions:
+  contents: write
+
+name: populate-apk-data
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Command to run (add/run/export)"
+        required: true
+        default: "run"
+      urls:
+        description: "Space-separated archive.org item URLs to add (used with add)"
+        required: false
+        default: ""
+  schedule:
+    - cron: '0 3 * * 1' # weekly, adjust as needed
+
+jobs:
+  populate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install remotezip
+
+      - name: Ensure data dir
+        run: mkdir -p data
+
+      - name: Run apk-archive command
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: |
+          if [ "${{ github.event.inputs.command }}" = "add" ]; then
+            if [ -z "${{ github.event.inputs.urls }}" ]; then
+              echo "No urls provided for add"
+              exit 1
+            fi
+            for u in ${{ github.event.inputs.urls }}; do
+              python apk_archive.py add "$u"
+            done
+          elif [ "${{ github.event.inputs.command }}" = "run" ]; then
+            python apk_archive.py run
+          elif [ "${{ github.event.inputs.command }}" = "export" ]; then
+            python apk_archive.py export json
+          else
+            echo "Unknown command: ${{ github.event.inputs.command }}"
+            exit 1
+          fi
+
+      - name: Show data folder contents
+        run: ls -la data || true
+
+      - name: Commit and push updated data/
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions@users.noreply.github.com"
+          # Add only files you want to persist. Here we add whole data/ folder.
+          git add data || true
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "ci: update data/ from workflow run (${GITHUB_RUN_ID})"
+            git push
+          fi
