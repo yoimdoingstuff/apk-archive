@@ -13,7 +13,7 @@ import gzip
 import os
 import re
 
-# try to import optional libs
+# optional libs
 try:
     from axmlparserpy.axmlprinter import AXMLPrinter
 except Exception:
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
     from zipfile import ZipInfo
 
 USE_ZIP_FILESIZE = False
-re_manifest = re.compile(r'AndroidManifest.xml')
 re_archive_url = re.compile(
     r'https?://archive.org/(?:metadata|details|download)/([^/]+)(?:/.*)?')
 CACHE_DIR = Path(__file__).parent / 'data'
@@ -59,28 +58,22 @@ def main():
 
     cmd = cli.add_parser('run', help='Download and process pending urls')
     cmd.add_argument('-force', '-f', action='store_true',
-                     help='Reindex local data / populate DB.'
-                     'Make sure to export fsize before!')
-    cmd.add_argument('pk', metavar='PK', type=int,
-                     nargs='*', help='Primary key')
+                     help='Reindex local data / populate DB.')
+    cmd.add_argument('pk', metavar='PK', type=int, nargs='*', help='Primary key')
 
     cmd = cli.add_parser('export', help='Export data')
-    cmd.add_argument('export_type', choices=['json', 'fsize'],
-                     help='Export to json or temporary-filesize file')
+    cmd.add_argument('export_type', choices=['json', 'fsize'], help='Export target')
 
     cmd = cli.add_parser('err', help='Handle problematic entries')
     cmd.add_argument('err_type', choices=['reset'], help='Set done=0 to retry')
 
     cmd = cli.add_parser('get', help='Lookup value')
-    cmd.add_argument('get_type', choices=['url', 'img', 'apk'],
-                     help='Get data field or download image.')
-    cmd.add_argument('pk', metavar='PK', type=int,
-                     nargs='+', help='Primary key')
+    cmd.add_argument('get_type', choices=['url', 'img', 'apk'], help='Get data field')
+    cmd.add_argument('pk', metavar='PK', type=int, nargs='+', help='Primary key')
 
     cmd = cli.add_parser('set', help='(Re)set value')
     cmd.add_argument('set_type', choices=['err'], help='Data field/column')
-    cmd.add_argument('pk', metavar='PK', type=int,
-                     nargs='+', help='Primary key')
+    cmd.add_argument('pk', metavar='PK', type=int, nargs='+', help='Primary key')
 
     args = parser.parse_args()
 
@@ -187,8 +180,6 @@ class CacheDB:
     def __del__(self) -> None:
         self._db.close()
 
-    # Get URL
-
     def getIdForBaseUrl(self, url: str) -> 'int|None':
         x = self._db.execute('SELECT pk FROM urls WHERE url=?', [url])
         row = x.fetchone()
@@ -211,8 +202,6 @@ class CacheDB:
         base, path = x.fetchone()
         return base + '/' + quote(path)
 
-    # Insert URL
-
     def insertBaseUrl(self, base: str) -> int:
         try:
             x = self._db.execute('INSERT INTO urls (url) VALUES (?);', [base])
@@ -222,17 +211,12 @@ class CacheDB:
             x = self._db.execute('SELECT pk FROM urls WHERE url = ?;', [base])
             return x.fetchone()[0]
 
-    def insertApkUrls(
-        self, baseUrlId: int, entries: 'Iterable[tuple[str, int, str]]'
-    ) -> int:
-        ''' :entries: must be iterable of `(path_name, filesize, crc32)` '''
+    def insertApkUrls(self, baseUrlId: int, entries: 'Iterable[tuple[str, int, str]]') -> int:
         self._db.executemany('''
         INSERT OR IGNORE INTO idx (base_url, path_name, fsize) VALUES (?,?,?);
         ''', ((baseUrlId, path, size) for path, size, _crc in entries))
         self._db.commit()
         return self._db.total_changes
-
-    # Update URL
 
     def getUpdateUrlIds(self, *, sinceNow: str) -> 'list[int]':
         x = self._db.execute('''SELECT pk FROM urls
@@ -245,21 +229,16 @@ class CacheDB:
             UPDATE urls SET date=strftime('%s','now') WHERE pk=?''', [uid])
         self._db.commit()
 
-    def updateApkUrl(self, baseUrlId: int, entry: 'tuple[str, int, str]') \
-            -> 'int|None':
-        ''' :entry: must be `(path_name, filesize, crc32)` '''
+    def updateApkUrl(self, baseUrlId: int, entry: 'tuple[str, int, str]') -> 'int|None':
         uid = self.getId(baseUrlId, entry[0])
         if uid:
-            self._db.execute('UPDATE idx SET done=0, fsize=? WHERE pk=?;',
-                             [entry[1], uid])
+            self._db.execute('UPDATE idx SET done=0, fsize=? WHERE pk=?;', [entry[1], uid])
             self._db.commit()
             return uid
         if self.insertApkUrls(baseUrlId, [entry]) > 0:
             x = self._db.execute('SELECT MAX(pk) FROM idx;')
             return x.fetchone()[0]
         return None
-
-    # Export JSON
 
     def jsonUrlMap(self) -> 'dict[int, str]':
         x = self._db.execute('SELECT pk, url FROM urls')
@@ -278,8 +257,6 @@ class CacheDB:
             FROM idx WHERE done=?
             ORDER BY tt COLLATE NOCASE, min_sdk, version;''', [done])
 
-    # Filesize
-
     def enumFilesize(self) -> Iterable[tuple]:
         yield from self._db.execute('SELECT pk, fsize FROM idx WHERE fsize>0;')
 
@@ -288,15 +265,11 @@ class CacheDB:
             self._db.execute('UPDATE idx SET fsize=? WHERE pk=?;', [size, uid])
             self._db.commit()
 
-    # Process Pending
-
     def count(self, *, done: int) -> int:
         x = self._db.execute('SELECT COUNT() FROM idx WHERE done=?;', [done])
         return x.fetchone()[0]
 
-    def getPendingQueue(self, *, done: int, batchsize: int) \
-            -> 'list[tuple[int, str, str]]':
-        # url || "/" || REPLACE(REPLACE(path_name, '#', '%23'), '?', '%3F')
+    def getPendingQueue(self, *, done: int, batchsize: int) -> 'list[tuple[int, str, str]]':
         x = self._db.execute('''SELECT idx.pk, url, path_name
             FROM idx INNER JOIN urls ON urls.pk=base_url
             WHERE done=? LIMIT ?;''', [done, batchsize])
@@ -306,17 +279,11 @@ class CacheDB:
         self._db.execute('UPDATE idx SET done=0 WHERE done=?;', [whereDone])
         self._db.commit()
 
-    # Finalize / Postprocessing
-
     def setError(self, uid: int, *, done: int) -> None:
         self._db.execute('UPDATE idx SET done=? WHERE pk=?;', [done, uid])
         self._db.commit()
 
     def setPermanentError(self, uid: int) -> None:
-        '''
-        Set done=4 and all file related columns to NULL.
-        Will also delete all manifest, and image files for {uid} in CACHE_DIR
-        '''
         self._db.execute('''
             UPDATE idx SET done=4, min_sdk=NULL, title=NULL,
             package_id=NULL, version=NULL WHERE pk=?;''', [uid])
@@ -357,9 +324,8 @@ class CacheDB:
 
     @staticmethod
     def _parseManifest(data: bytes) -> dict:
-        """Parse Android binary manifest - use axmlparserpy if available, fallback to simple extraction."""
         manifest = {}
-        # Try AXMLPrinter if available (gives XML)
+        # Try AXMLPrinter if available
         if AXMLPrinter:
             try:
                 ap = AXMLPrinter(data)
@@ -367,13 +333,11 @@ class CacheDB:
                 root = ET.fromstring(xml)
                 manifest['package'] = root.get('package') or ''
                 manifest['versionName'] = root.get(A_ANDROID + 'versionName') or root.get('versionName') or ''
-                # uses-sdk
                 uses_sdk = root.find('uses-sdk')
                 if uses_sdk is not None:
                     minSdk = uses_sdk.get(A_ANDROID + 'minSdkVersion') or uses_sdk.get('minSdkVersion')
                     if minSdk:
                         manifest['minSdkVersion'] = int(''.join(filter(str.isdigit, str(minSdk))))
-                # application label (may be resource ref)
                 application = root.find('application')
                 if application is not None:
                     lbl = application.get(A_ANDROID + 'label') or application.get('label')
@@ -381,10 +345,9 @@ class CacheDB:
                         manifest['label'] = lbl
                 return manifest
             except Exception:
-                # fall through to fallback
                 pass
 
-        # Fallback simple string extraction (old behavior)
+        # fallback
         if b'package=' in data:
             try:
                 manifest['package'] = str(data).split('package=')[1].split('\\')[0]
@@ -410,7 +373,7 @@ class CacheDB:
 
 
 ###############################################
-# [add] Process HTML link list
+# [add] Process metadata -> DB
 ###############################################
 
 def addNewUrl(url: str) -> None:
@@ -442,11 +405,7 @@ def pathToListJson(baseUrlId: int, *, tmp: bool = False) -> Path:
     return CACHE_DIR / 'url_cache' / f'{baseUrlId}.json.gz'
 
 
-def downloadListArchiveOrg(
-    archiveId: str, json_file: Path, *, force: bool = False
-) -> 'list[tuple[str, int, str]]':
-    ''' :returns: List of `(path_name, file_size, crc32)` '''
-    # store json for later
+def downloadListArchiveOrg(archiveId: str, json_file: Path, *, force: bool = False) -> 'list[tuple[str, int, str]]':
     if force or not json_file.exists():
         json_file.parent.mkdir(exist_ok=True)
         print(f'load: {archiveId}')
@@ -459,17 +418,15 @@ def downloadListArchiveOrg(
                     if not block:
                         break
                     fp.write(block)
-    # read saved json from disk
     with gzip.open(json_file, 'rb') as fp:
         data = json.load(fp)
-    # process and add to DB (case-insensitive)
     return [(x.get('name'), int(x.get('size', 0)), x.get('crc32'))
             for x in data.get('result', [])
             if x.get('source') == 'original' and x.get('name', '').lower().endswith('.apk')]
 
 
 ###############################################
-# [update] Re-index existing URL caches
+# [run] Process pending -> extract manifests & icons
 ###############################################
 
 def updateUrl(url_or_uid: 'str|int', proc_i: int, proc_total: int):
@@ -477,30 +434,25 @@ def updateUrl(url_or_uid: 'str|int', proc_i: int, proc_total: int):
     if not baseUrlId or not url:
         print(f'[ERROR] Ignoring "{url_or_uid}". Not found in DB', file=stderr)
         return
-
-    archiveId = extractArchiveOrgId(url) or ''  # guaranteed to return str
+    archiveId = extractArchiveOrgId(url) or ''
     print(f'Updating [{proc_i}/{proc_total}] {archiveId}')
-
     old_json_file = pathToListJson(baseUrlId)
     new_json_file = pathToListJson(baseUrlId, tmp=True)
     old_entries = set(downloadListArchiveOrg(archiveId, old_json_file))
     new_entries = set(downloadListArchiveOrg(archiveId, new_json_file))
     old_diff = old_entries - new_entries
     new_diff = new_entries - old_entries
-
     DB = CacheDB()
     if old_diff or new_diff:
-        c_del = 0
-        c_new = 0
-        for old_entry in old_diff:  # no need to sort
+        c_del = c_new = 0
+        for old_entry in old_diff:
             uid = DB.getId(baseUrlId, old_entry[0])
             if uid:
                 print(f'  rm: [{uid}] {old_entry}')
                 DB.setPermanentError(uid)
                 c_del += 1
             else:
-                print(f'  [ERROR] could not find old entry {old_entry[0]}',
-                      file=stderr)
+                print(f'  [ERROR] could not find old entry {old_entry[0]}', file=stderr)
         for new_entry in sorted(new_diff):
             uid = DB.updateApkUrl(baseUrlId, new_entry)
             if uid:
@@ -512,16 +464,14 @@ def updateUrl(url_or_uid: 'str|int', proc_i: int, proc_total: int):
         os.rename(new_json_file, old_json_file)
     else:
         print('  no changes.')
-
     DB.markBaseUrlUpdated(baseUrlId)
     if new_json_file.exists():
         os.remove(new_json_file)
 
 
 def _lookupBaseUrl(url_or_index: 'str|int') -> 'tuple[int|None, str|None]':
-    if isinstance(url_or_index, str):
-        if url_or_index.isnumeric():
-            url_or_index = int(url_or_index)
+    if isinstance(url_or_index, str) and url_or_index.isnumeric():
+        url_or_index = int(url_or_index)
     if isinstance(url_or_index, int):
         baseUrlId = url_or_index
         url = CacheDB().getBaseUrlForId(baseUrlId)
@@ -534,10 +484,6 @@ def _lookupBaseUrl(url_or_index: 'str|int') -> 'tuple[int|None, str|None]':
     return baseUrlId, url
 
 
-###############################################
-# [run] Process pending urls from DB
-###############################################
-
 def processPending():
     processed = 0
     with Pool(processes=8) as pool:
@@ -549,10 +495,7 @@ def processPending():
             if not batch:
                 print('Queue empty. done.')
                 break
-
-            batch = [(processed + i + 1, pending - i - 1, *x)
-                     for i, x in enumerate(batch)]
-
+            batch = [(processed + i + 1, pending - i - 1, *x) for i, x in enumerate(batch)]
             result = pool.starmap_async(procSinglePending, batch).get()
             processed += len(result)
             DB = CacheDB()
@@ -574,9 +517,7 @@ def processPending():
             print(f' - [{uid}] {base}/{quote(path_name)}')
 
 
-def procSinglePending(
-    processed: int, pending: int, uid: int, base_url: str, path_name
-) -> 'tuple[int, bool]':
+def procSinglePending(processed: int, pending: int, uid: int, base_url: str, path_name) -> 'tuple[int, bool]':
     url = base_url + '/' + quote(path_name)
     humanUrl = url.split('archive.org/download/')[-1]
     print(f'[{processed}|{pending} queued]: load[{uid}] {humanUrl}')
@@ -598,16 +539,14 @@ def onceReadSizeFromFile(uid: int) -> 'int|None':
 
 
 ###############################################
-# Process APK zip
+# APK processing: extract AndroidManifest.xml + icon
 ###############################################
 
 def ensure_jpg(img_path: Path):
-    """Create a JPG alongside a PNG for site consumption (if Pillow available)."""
     jpg_path = img_path.with_suffix('.jpg')
     if not img_path.exists():
         return False
     if Image is None:
-        # If Pillow not installed, skip converting but keep PNG
         return False
     try:
         with Image.open(img_path) as im:
@@ -623,12 +562,11 @@ def ensure_jpg(img_path: Path):
         return False
 
 
-def loadApk(uid: int, url: str, *,
-            overwrite: bool = False, image_only: bool = False) -> bool:
+def loadApk(uid: int, url: str, *, overwrite: bool = False, image_only: bool = False) -> bool:
     basename = diskPath(uid, '')
     basename.parent.mkdir(exist_ok=True)
     img_path = basename.with_suffix('.png')
-    manifest_path = basename.with_suffix('.manifest')
+    manifest_path = basename.with_suffix('.manifest')  # used by setDone
     if not overwrite and manifest_path.exists():
         return True
 
@@ -642,36 +580,52 @@ def loadApk(uid: int, url: str, *,
         zip_listing = zip.infolist()
         manifest_found = False
 
-        # Prefer best icon if multiple; simple approach: extract first usable png from res/
+        # Extract exactly AndroidManifest.xml
         for entry in zip_listing:
             fn = entry.filename.lstrip('/')
-            # manifest
             if fn == 'AndroidManifest.xml':
                 manifest_found = True
                 if not image_only:
                     extractZipEntry(zip, entry, manifest_path)
-            # any png inside res/ that looks like an icon
-            elif '/res/' in fn and fn.lower().endswith('.png'):
-                # heuristics: prefer ic_launcher or any png near end
-                if 'ic_launcher' in fn or 'launcher' in fn or 'icon' in fn.lower():
-                    extractZipEntry(zip, entry, img_path)
-                    artwork = img_path.exists() and os.path.getsize(img_path) > 0
-                    if artwork:
-                        break
-        # fallback: pick any small png if none matched
-        if not artwork:
+                # don't break: we still can look for icons below
+
+        # Icon heuristics: try common icon names in res/ (ic_launcher, any icon, then fallback)
+        if not image_only:
+            # try prioritized matches
+            preferred = []
             for entry in zip_listing:
                 fn = entry.filename.lstrip('/')
-                if fn.lower().endswith('.png') and not fn.startswith('META-INF'):
-                    extractZipEntry(zip, entry, img_path)
-                    artwork = img_path.exists() and os.path.getsize(img_path) > 0
-                    if artwork:
-                        break
+                if '/res/' in fn and fn.lower().endswith('.png'):
+                    name = fn.split('/')[-1].lower()
+                    score = 100
+                    if 'ic_launcher' in name:
+                        score = 1
+                    elif 'launcher' in name:
+                        score = 2
+                    elif 'icon' in name:
+                        score = 3
+                    preferred.append((score, entry))
+            preferred.sort(key=lambda x: x[0])
+            for _score, entry in preferred:
+                extractZipEntry(zip, entry, img_path)
+                artwork = img_path.exists() and os.path.getsize(img_path) > 0
+                if artwork:
+                    break
+
+            # fallback: take any png if still none
+            if not artwork:
+                for entry in zip_listing:
+                    fn = entry.filename.lstrip('/')
+                    if fn.lower().endswith('.png') and not fn.startswith('META-INF'):
+                        extractZipEntry(zip, entry, img_path)
+                        artwork = img_path.exists() and os.path.getsize(img_path) > 0
+                        if artwork:
+                            break
 
         if not manifest_found:
             print(f'ERROR: [{uid}] apk has no "AndroidManifest.xml"', file=stderr)
 
-    # convert extracted png to jpg for site use
+    # Convert PNG -> JPG (if Pillow present)
     if img_path.exists():
         ensure_jpg(img_path)
 
@@ -685,14 +639,13 @@ def extractZipEntry(zip: 'RemoteZip', zipInfo: 'ZipInfo', dest_filename: Path):
 
 
 ###############################################
-# [json] Export to json
+# Export JSON
 ###############################################
 
 def export_json():
     DB = CacheDB()
     url_map = DB.jsonUrlMap()
     maxUrlId = max(url_map.keys()) if url_map else 0
-    # just a visual separator
     maxUrlId += 1
     url_map[maxUrlId] = '---'
     submap = {}
@@ -702,7 +655,6 @@ def export_json():
         for i, entry in enumerate(DB.enumJsonApk(done=1)):
             if i % 113 == 0:
                 print(f'\rprocessing [{i}/{total}]', end='')
-            # if path_name is in a subdirectory, reindex URLs
             if '/' in entry[6]:
                 baseurl = url_map[entry[5]]
                 sub_dir, sub_file = entry[6].split('/', 1)
@@ -715,7 +667,6 @@ def export_json():
                 entry = list(entry)
                 entry[5] = subIdx
                 entry[6] = sub_file
-
             if i > 0:
                 fp.write(',\n')
             fp.write(json.dumps(entry, separators=(',', ':')))
