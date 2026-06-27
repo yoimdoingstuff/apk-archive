@@ -38,7 +38,7 @@ USE_ZIP_FILESIZE = False
 re_archive_url = re.compile(
     r'https?://archive.org/(?:metadata|details|download)/([^/]+)(?:/.*)?')
 CACHE_DIR = Path(__file__).parent / 'data'
-CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DIR.mkdir(exist_ok=True, parents=True)
 
 ANDROID_NS = 'http://schemas.android.com/apk/res/android'
 A_ANDROID = '{' + ANDROID_NS + '}'
@@ -127,7 +127,7 @@ def main():
                 loadApk(pk, url, overwrite=True, image_only=True)
         elif args.get_type == 'apk':
             dir = Path('apk_download')
-            dir.mkdir(exist_ok=True)
+            dir.mkdir(exist_ok=True, parents=True)
             for pk in args.pk:
                 url = DB.getUrl(pk)
                 print(pk, ': load apk', url)
@@ -401,25 +401,43 @@ def urlForArchiveOrgId(archiveId: str) -> str:
 
 def pathToListJson(baseUrlId: int, *, tmp: bool = False) -> Path:
     if tmp:
-        return CACHE_DIR / 'url_cache' / f'tmp_{baseUrlId}.json.gz'
-    return CACHE_DIR / 'url_cache' / f'{baseUrlId}.json.gz'
+        path = CACHE_DIR / 'url_cache' / f'tmp_{baseUrlId}.json.gz'
+    else:
+        path = CACHE_DIR / 'url_cache' / f'{baseUrlId}.json.gz'
+    # ensure parent exists
+    path.parent.mkdir(exist_ok=True, parents=True)
+    return path
 
 
 def downloadListArchiveOrg(archiveId: str, json_file: Path, *, force: bool = False) -> 'list[tuple[str, int, str]]':
     if force or not json_file.exists():
-        json_file.parent.mkdir(exist_ok=True)
+        # parent already ensured by pathToListJson, but ensure again
+        json_file.parent.mkdir(exist_ok=True, parents=True)
         print(f'load: {archiveId}')
         req = Request(f'https://archive.org/metadata/{archiveId}/files')
         req.add_header('Accept-Encoding', 'deflate, gzip')
         with urlopen(req) as page:
+            data = page.read()
+            # write raw response bytes to file (may or may not be gzipped)
             with open(json_file, 'wb') as fp:
-                while True:
-                    block = page.read(8096)
-                    if not block:
-                        break
-                    fp.write(block)
-    with gzip.open(json_file, 'rb') as fp:
-        data = json.load(fp)
+                fp.write(data)
+    # read file and support either gzipped or plain JSON
+    with open(json_file, 'rb') as fp:
+        raw = fp.read()
+    try:
+        if raw.startswith(b'\x1f\x8b'):
+            # gzipped
+            txt = gzip.decompress(raw).decode('utf-8')
+        else:
+            txt = raw.decode('utf-8')
+        data = json.loads(txt)
+    except Exception as e:
+        # fallback: try gzip.open (older Python compatibility) or raise
+        try:
+            with gzip.open(json_file, 'rt', encoding='utf-8') as fp:
+                data = json.load(fp)
+        except Exception:
+            raise
     return [(x.get('name'), int(x.get('size', 0)), x.get('crc32'))
             for x in data.get('result', [])
             if x.get('source') == 'original' and x.get('name', '').lower().endswith('.apk')]
@@ -564,7 +582,7 @@ def ensure_jpg(img_path: Path):
 
 def loadApk(uid: int, url: str, *, overwrite: bool = False, image_only: bool = False) -> bool:
     basename = diskPath(uid, '')
-    basename.parent.mkdir(exist_ok=True)
+    basename.parent.mkdir(exist_ok=True, parents=True)
     img_path = basename.with_suffix('.png')
     manifest_path = basename.with_suffix('.manifest')  # used by setDone
     if not overwrite and manifest_path.exists():
@@ -650,6 +668,8 @@ def export_json():
     url_map[maxUrlId] = '---'
     submap = {}
     total = DB.count(done=1)
+    # ensure data dir exists
+    CACHE_DIR.mkdir(exist_ok=True, parents=True)
     with open(CACHE_DIR / 'apk.json', 'w') as fp:
         fp.write('[')
         for i, entry in enumerate(DB.enumJsonApk(done=1)):
