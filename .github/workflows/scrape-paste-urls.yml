@@ -17,11 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore previous DB & data (if any)
-        uses: actions/download-artifact@v4
+      - name: Restore/persist data cache
+        uses: actions/cache@v4
         with:
-          name: apk-cache
-          path: ./data
+          path: data
+          key: apk-cache-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            apk-cache-${{ runner.os }}-
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -60,8 +62,4 @@ jobs:
         run: |
           python search.py export json || echo "export failed; continuing"
 
-      - name: Upload artifact (persist data folder)
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk-cache
-          path: data
+      # Note: data is persisted via actions/cache above; no upload artifact step required
