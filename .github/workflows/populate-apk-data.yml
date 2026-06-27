@@ -64,21 +64,26 @@ jobs:
       - name: Export JSON for site
         run: python apk_archive.py export json
 
-      - name: Show data folder contents
-        run: ls -la data || true
+      - name: Debug: list data files
+        run: |
+          echo "------ data/ contents ------"
+          find data -maxdepth 3 -type f -exec ls -l {} \; || true
+          echo "------ apk.json head ------"
+          head -n 5 data/apk.json || true
 
-      - name: Commit exported JSON and images
+      - name: Commit exported JSON and icons
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions@users.noreply.github.com"
-          # Add only the exported JSON and JPG icons to avoid committing the DB
+          # Add exported JSON and any PNG/JPG icons to avoid committing the DB
           git add data/apk.json data/urls.json || true
           git add data/*/*.jpg || true
+          git add data/*/*.png || true
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "ci: update exported apk JSON and images (${GITHUB_RUN_ID})"
+            git commit -m "ci: update exported apk JSON and icons (${GITHUB_RUN_ID})"
             git push
           fi
