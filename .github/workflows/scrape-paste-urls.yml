@@ -1,0 +1,67 @@
+name: apk-archive-scrape-paste-urls
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'Paste archive.org URLs (one per line). Leave empty to only process existing queue.'
+        required: false
+        default: ''
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore previous DB & data (if any)
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-cache
+          path: ./data
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write pasted URLs to file (if provided)
+        if: ${{ github.event.inputs.urls != '' }}
+        run: |
+          echo "${{ github.event.inputs.urls }}" > pasted_urls.txt
+          # Normalize line endings and remove empty lines
+          awk 'NF' pasted_urls.txt > pasted_urls_norm.txt
+          mv pasted_urls_norm.txt pasted_urls.txt
+          echo "URLs to add:"
+          cat pasted_urls.txt
+
+      - name: Add pasted URLs to scrape queue
+        if: ${{ github.event.inputs.urls != '' }}
+        run: |
+          while IFS= read -r url; do
+            echo "Adding: $url"
+            python search.py add "$url"
+          done < pasted_urls.txt
+
+      - name: Run the processing queue (download & index)
+        run: |
+          # -retry will attempt to retry failed entries during this invocation
+          python search.py run -retry
+
+      - name: Export JSON (optional)
+        run: |
+          python search.py export json || echo "export failed; continuing"
+
+      - name: Upload artifact (persist data folder)
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-cache
+          path: data
