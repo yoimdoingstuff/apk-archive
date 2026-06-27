@@ -1,0 +1,56 @@
+name: apk-archive-scrape
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 3 * * *'   # daily at 03:00 UTC (adjust as you need)
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore previous DB artifact (if any)
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-cache
+          path: ./data
+        # If no artifact exists this step just logs a warning; pipeline continues.
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: (Optional) Put pngdefry binary in place
+        run: |
+          # If you keep pngdefry in the repo or fetch it, ensure it's executable and at pngdefry/pngdefry
+          ls -la pngdefry || echo "pngdefry not present; continuing without it"
+
+      - name: Add archive.org collection(s) to queue
+        run: |
+          # replace with one or more archive.org URLs you want to scan
+          python search.py add https://archive.org/details/EXAMPLE_COLLECTION
+
+      - name: Run the processing queue (download & index)
+        run: |
+          # adjust flags: -retry to retry failures
+          python search.py run -retry
+
+      - name: Export JSON (optional)
+        run: |
+          python search.py export json
+
+      - name: Upload artifact (persist data folder)
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-cache
+          path: data
