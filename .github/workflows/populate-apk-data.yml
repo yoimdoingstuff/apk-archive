@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install remotezip axmlparserpy Pillow
+          python -m pip install remotezip axmlparserpy Pillow
 
       - name: Ensure data dir
         run: mkdir -p data
@@ -39,7 +39,9 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.urls }}" ]; then
             echo "Adding URLs: ${{ github.event.inputs.urls }}"
-            for u in ${{ github.event.inputs.urls }}; do
+            # Split on whitespace (space/newline/tab) into an array, then iterate safely
+            IFS=$' \n\t' read -r -a arr <<< "${{ github.event.inputs.urls }}"
+            for u in "${arr[@]}"; do
               python apk_archive.py add "$u" || echo "add failed for $u"
             done
           else
@@ -77,10 +79,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions@users.noreply.github.com"
-          # Add exported JSON and any PNG/JPG icons to avoid committing the DB
+          # Add exported JSON and any PNG/JPG icons (recursively). Avoid committing the DB.
           git add data/apk.json data/urls.json || true
-          git add data/*/*.jpg || true
-          git add data/*/*.png || true
+          find data -type f \( -iname '*.jpg' -o -iname '*.png' \) -exec git add {} + || true
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
